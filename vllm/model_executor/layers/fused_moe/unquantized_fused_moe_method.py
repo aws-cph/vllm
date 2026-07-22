@@ -59,7 +59,15 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         # Escape hatch for CPU, which stays on the old monolithic path.
         if self.unquantized_backend == UnquantizedMoeBackend.CPU:
             return True
-        return super().is_monolithic
+        # Inline base logic; a super() property becomes a data-dependent jump
+        # under dynamo (SuperVariable). Inlined, these config reads fold.
+        if self.moe_kernel is None:
+            # experts_cls unset or None (OOT) => no monolithic kernel.
+            experts_cls = getattr(self, "experts_cls", None)
+            if experts_cls is not None:
+                return experts_cls.is_monolithic()
+            return False
+        return self.moe_kernel.is_monolithic
 
     @property
     def supports_eplb(self) -> bool:
@@ -322,7 +330,12 @@ class UnquantizedFusedMoEMethod(FusedMoEMethodBase, CustomOp):
         shared_experts: SharedExperts | None,
         shared_experts_input: torch.Tensor | None,
     ) -> torch.Tensor:
-        assert self.moe_kernel is not None
+        if self.moe_kernel is None:
+            # OOT: oracle gives no kernel, so route to the platform impl.
+            assert self.unquantized_backend == UnquantizedMoeBackend.OOT
+            return current_platform.moe_forward_oot(
+                layer, x, topk_weights, topk_ids
+            )
         return self.moe_kernel.apply(
             hidden_states=x,
             w1=layer.w13_weight,

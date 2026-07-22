@@ -14,6 +14,7 @@ from vllm.model_executor.layers.fused_moe.config import (
     get_routing_method_type,
 )
 from vllm.model_executor.layers.fused_moe.router.base_router import BaseRouter
+from vllm.platforms import current_platform
 
 
 def _get_padding_mask(num_tokens: int) -> torch.Tensor | None:
@@ -66,6 +67,8 @@ def dispatch_topk_softmax_func(
 ) -> Callable[..., tuple[torch.Tensor, ...]]:
     if use_rocm_aiter:
         return rocm_aiter_ops.topk_softmax
+    if (impl := current_platform.get_moe_topk_func("softmax")) is not None:
+        return impl
     return vllm_topk_softmax
 
 
@@ -74,6 +77,8 @@ def dispatch_topk_sigmoid_func(
 ) -> Callable[..., tuple[torch.Tensor, ...]]:
     if use_rocm_aiter:
         return rocm_aiter_ops.topk_sigmoid
+    if (impl := current_platform.get_moe_topk_func("sigmoid")) is not None:
+        return impl
     return vllm_topk_sigmoid
 
 

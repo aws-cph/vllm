@@ -163,10 +163,11 @@ class FusedMoEMethodBase(QuantizeMethodBase):
     @property
     def is_monolithic(self) -> bool:
         if self.moe_kernel is None:
-            if hasattr(self, "experts_cls"):
-                return self.experts_cls.is_monolithic()
-            else:
-                return False
+            # experts_cls unset or None (OOT) => no monolithic kernel.
+            experts_cls = getattr(self, "experts_cls", None)
+            if experts_cls is not None:
+                return experts_cls.is_monolithic()
+            return False
         return self.moe_kernel.is_monolithic
 
     def apply(

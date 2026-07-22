@@ -298,10 +298,15 @@ class MoERunner(MoERunnerInterface):
         return self.routed_experts.load_weights(weights)
 
     def _select_forward(self) -> Callable:
-        if current_platform.is_tpu() or current_platform.is_cpu():
+        if (
+            current_platform.is_tpu()
+            or current_platform.is_cpu()
+            or current_platform.is_out_of_tree()
+        ):
             # TODO: Once the OOM issue for the TPU backend is resolved, we
             # will switch to using the moe_forward custom op.
             # Note: CPU doesn't require wrapped _forward_impl.
+            # OOT bypasses the custom op (wraps a CUDA op it can't trace).
             return _moe_forward if self._shared_experts is None else _moe_forward_shared
 
         return (

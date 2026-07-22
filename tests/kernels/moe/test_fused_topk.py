@@ -271,3 +271,52 @@ def test_fused_topk_bias_nan_inf_clamp(
             f"Row {row} has non-finite weights {topk_weights[row].tolist()} "
             f"(bad_value={bad_value}, scoring_func={scoring_func})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Platform top-k dispatch hook.
+#
+# dispatch_topk_{softmax,sigmoid}_func let an OOT platform supply a native
+# (traceable) top-k implementation in place of the CUDA custom op, via
+# Platform.get_moe_topk_func. These tests cover that dispatch precedence
+# without requiring the CUDA op to be built.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("scoring_func", ["softmax", "sigmoid"])
+def test_dispatch_topk_uses_platform_hook(monkeypatch, scoring_func):
+    from vllm.model_executor.layers.fused_moe.router import fused_topk_router as r
+
+    sentinel = object()
+
+    def fake_get_moe_topk_func(func):
+        return sentinel if func == scoring_func else None
+
+    monkeypatch.setattr(
+        r.current_platform,
+        "get_moe_topk_func",
+        fake_get_moe_topk_func,
+        raising=False,
+    )
+
+    if scoring_func == "softmax":
+        assert r.dispatch_topk_softmax_func(use_rocm_aiter=False) is sentinel
+    else:
+        assert r.dispatch_topk_sigmoid_func(use_rocm_aiter=False) is sentinel
+
+
+@pytest.mark.parametrize("scoring_func", ["softmax", "sigmoid"])
+def test_dispatch_topk_defaults_when_no_hook(monkeypatch, scoring_func):
+    from vllm.model_executor.layers.fused_moe.router import fused_topk_router as r
+
+    monkeypatch.setattr(
+        r.current_platform,
+        "get_moe_topk_func",
+        lambda func: None,
+        raising=False,
+    )
+
+    if scoring_func == "softmax":
+        assert r.dispatch_topk_softmax_func(use_rocm_aiter=False) is r.vllm_topk_softmax
+    else:
+        assert r.dispatch_topk_sigmoid_func(use_rocm_aiter=False) is r.vllm_topk_sigmoid

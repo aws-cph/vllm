@@ -6,6 +6,7 @@ import functools
 import os
 import platform
 import sys
+from collections.abc import Callable
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -259,6 +260,34 @@ class Platform:
         override this method to import their own kernel modules.
         """
         import vllm.kernels  # noqa: F401
+
+    @classmethod
+    def get_moe_topk_func(cls, scoring_func: str) -> "Callable | None":
+        """Platform-native fused-MoE top-k func for ``scoring_func``
+        ("softmax"/"sigmoid"), overriding the default CUDA custom op. ``None``
+        (default) keeps the CUDA path; OOT platforms return a traceable impl.
+        """
+        return None
+
+    @classmethod
+    def moe_forward_oot(
+        cls,
+        layer: "torch.nn.Module",
+        x: "torch.Tensor",
+        topk_weights: "torch.Tensor",
+        topk_ids: "torch.Tensor",
+    ) -> "torch.Tensor":
+        """Run the unquantized fused-MoE experts on an OOT platform.
+
+        The oracle gives OOT the ``OOT`` backend with no kernel
+        (``moe_kernel is None``), so OOT platforms override this; the base
+        raises to flag a missing override.
+        """
+        raise NotImplementedError(
+            f"{getattr(cls, 'device_name', cls.__name__)} selected the OOT "
+            "unquantized MoE backend but does not implement "
+            "Platform.moe_forward_oot()."
+        )
 
     @classmethod
     def device_control_id_to_physical_device_id(cls, device_id: str) -> int:

@@ -402,3 +402,77 @@ def test_select_explicit_triton_backend(is_lora_enabled):
 
     assert selected_backend == UnquantizedMoeBackend.TRITON
     assert experts_cls is not None
+
+
+# ---------------------------------------------------------------------------
+# OOT (out-of-tree) unquantized MoE consumption path.
+#
+# select_unquantized_moe_backend returns (OOT, None) for OOT platforms (see
+# test_select_default_backend_by_platform). These tests cover the code that
+# consumes that result: the Platform hooks and the branches that route through
+# them when there is no in-tree kernel (moe_kernel is None).
+# ---------------------------------------------------------------------------
+
+
+def test_platform_moe_hook_defaults():
+    """Base Platform: get_moe_topk_func returns None, moe_forward_oot raises."""
+    from vllm.platforms.interface import Platform
+
+    assert Platform.get_moe_topk_func("softmax") is None
+    assert Platform.get_moe_topk_func("sigmoid") is None
+
+    with pytest.raises(NotImplementedError):
+        Platform.moe_forward_oot(None, None, None, None)
+
+
+def test_is_monolithic_false_for_oot():
+    """is_monolithic is False when there is no kernel and no experts class.
+
+    The oracle hands OOT the OOT backend with experts_cls=None, so both the
+    base-class property and the UnquantizedFusedMoEMethod override must fold to
+    False (there is no monolithic kernel) rather than raise on the missing
+    experts class. This is also what lets dynamo constant-fold the branch when
+    the OOT forward path is traced.
+    """
+    from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
+        UnquantizedFusedMoEMethod,
+    )
+
+    method = UnquantizedFusedMoEMethod.__new__(UnquantizedFusedMoEMethod)
+    method.moe_kernel = None
+    method.experts_cls = None
+    method.unquantized_backend = UnquantizedMoeBackend.OOT
+
+    assert method.is_monolithic is False
+
+
+def test_forward_native_routes_to_moe_forward_oot(monkeypatch):
+    """forward_native delegates to current_platform.moe_forward_oot when the
+    oracle supplied no kernel (OOT backend)."""
+    import torch
+
+    from vllm.model_executor.layers.fused_moe import unquantized_fused_moe_method as m
+    from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
+        UnquantizedFusedMoEMethod,
+    )
+
+    method = UnquantizedFusedMoEMethod.__new__(UnquantizedFusedMoEMethod)
+    method.moe_kernel = None
+    method.unquantized_backend = UnquantizedMoeBackend.OOT
+
+    sentinel = torch.tensor([1.0, 2.0])
+    captured = {}
+
+    def fake_moe_forward_oot(layer, x, topk_weights, topk_ids):
+        captured["args"] = (layer, x, topk_weights, topk_ids)
+        return sentinel
+
+    monkeypatch.setattr(
+        m.current_platform, "moe_forward_oot", fake_moe_forward_oot, raising=False
+    )
+
+    layer, x, tw, ti = "layer", "x", "tw", "ti"
+    out = method.forward_native(layer, x, tw, ti, None, None)
+
+    assert out is sentinel
+    assert captured["args"] == (layer, x, tw, ti)
